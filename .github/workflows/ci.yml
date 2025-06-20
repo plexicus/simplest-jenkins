@@ -1,0 +1,111 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  trigger-jenkins:
+    runs-on: ubuntu-latest
+    name: Trigger Jenkins Build
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Get commit information
+      id: commit-info
+      run: |
+        echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+        echo "short-sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+        echo "branch=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
+        echo "message=$(git log -1 --pretty=%B)" >> $GITHUB_OUTPUT
+    
+    - name: Trigger Jenkins Build
+      env:
+        JENKINS_URL: ${{ secrets.JENKINS_URL }}
+        JENKINS_USER: ${{ secrets.JENKINS_USER }}
+        JENKINS_TOKEN: ${{ secrets.JENKINS_TOKEN }}
+        JOB_NAME: "vulnerable-webapp"
+      run: |
+        echo "Triggering Jenkins build for commit ${{ steps.commit-info.outputs.short-sha }}"
+        
+        # Trigger Jenkins job with parameters
+        curl -X POST \
+          -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
+          "${JENKINS_URL}/job/${JOB_NAME}/buildWithParameters" \
+          -d "BRANCH_NAME=${{ steps.commit-info.outputs.branch }}" \
+          -d "GIT_COMMIT=${{ steps.commit-info.outputs.sha }}" \
+          -d "GITHUB_RUN_ID=${{ github.run_id }}" \
+          -d "GITHUB_RUN_NUMBER=${{ github.run_number }}"
+        
+        echo "Jenkins build triggered successfully"
+        echo "Monitor build progress at: ${JENKINS_URL}/job/${JOB_NAME}"
+    
+    - name: Wait for Jenkins Build (Optional)
+      if: github.event_name == 'pull_request'
+      env:
+        JENKINS_URL: ${{ secrets.JENKINS_URL }}
+        JENKINS_USER: ${{ secrets.JENKINS_USER }}
+        JENKINS_TOKEN: ${{ secrets.JENKINS_TOKEN }}
+        JOB_NAME: "vulnerable-webapp"
+      run: |
+        echo "Waiting for Jenkins build to complete..."
+        
+        # Get the latest build number
+        BUILD_NUMBER=$(curl -s -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
+          "${JENKINS_URL}/job/${JOB_NAME}/api/json" | \
+          jq -r '.nextBuildNumber - 1')
+        
+        echo "Monitoring build #${BUILD_NUMBER}"
+        
+        # Wait for build to complete (with timeout)
+        TIMEOUT=1800  # 30 minutes
+        ELAPSED=0
+        INTERVAL=30
+        
+        while [ $ELAPSED -lt $TIMEOUT ]; do
+          BUILD_STATUS=$(curl -s -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
+            "${JENKINS_URL}/job/${JOB_NAME}/${BUILD_NUMBER}/api/json" | \
+            jq -r '.result // "BUILDING"')
+          
+          echo "Build status: ${BUILD_STATUS}"
+          
+          if [ "$BUILD_STATUS" != "BUILDING" ] && [ "$BUILD_STATUS" != "null" ]; then
+            echo "Build completed with status: ${BUILD_STATUS}"
+            
+            if [ "$BUILD_STATUS" = "SUCCESS" ]; then
+              echo "✅ Jenkins build completed successfully"
+              exit 0
+            else
+              echo "❌ Jenkins build failed with status: ${BUILD_STATUS}"
+              echo "Check build logs at: ${JENKINS_URL}/job/${JOB_NAME}/${BUILD_NUMBER}/console"
+              exit 1
+            fi
+          fi
+          
+          sleep $INTERVAL
+          ELAPSED=$((ELAPSED + INTERVAL))
+        done
+        
+        echo "⏰ Build timeout reached. Check Jenkins manually."
+        echo "Build URL: ${JENKINS_URL}/job/${JOB_NAME}/${BUILD_NUMBER}"
+        exit 1
+
+  notify:
+    runs-on: ubuntu-latest
+    needs: trigger-jenkins
+    if: always()
+    
+    steps:
+    - name: Notify build status
+      run: |
+        if [ "${{ needs.trigger-jenkins.result }}" = "success" ]; then
+          echo "🚀 Pipeline completed successfully"
+          echo "Jenkins has been triggered and will handle the build, test, and deployment process"
+        else
+          echo "❌ Pipeline failed"
+          echo "Check the Jenkins trigger step for more details"
+        fi 

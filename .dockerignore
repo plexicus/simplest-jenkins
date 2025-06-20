@@ -1,0 +1,38 @@
+# Git
+.git
+.gitignore
+README.md
+
+# Maven
+target/
+!target/*.jar
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+release.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.eclipse/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# CI/CD
+Jenkinsfile
+.github/
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp 
