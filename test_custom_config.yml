@@ -1,0 +1,45 @@
+
+# Tools to exclude from analysis
+excluded_tools:
+  - syft
+  - trivy-sbom
+  - bandit
+
+# Tools to specifically include (optional)
+included_tools:
+  - opengrep
+  - kics
+  - hadolint
+
+# # Specific tool configuration
+# semgrep_cli:
+#   token: "your-semgrep-token"
+
+# # Configuration for Nuclei
+# nuclei:
+#   application_url: "https://my-app.com"
+#   authorization:
+#     type: "bearer"
+#     token: "your-bearer-token"
+
+# # Configuration for BlackDuck
+# black_duck:
+#   project_name: "my-project"
+
+# # Configuration for Checkmarx
+# checkmarx:
+#   base_url: "https://checkmarx.my-company.com"
+#   username: "my-username"
+#   password: "my-password"
+#   client_id: "my-client-id"
+#   client_secret: "my-client-secret"
+#   team_id: 123
+
+# # Configuration for Fortify
+# fortify:
+#   client_id: "my-client-id"
+#   client_secret: "my-client-secret"
+#   release_id: "my-release-id"
+
+message_url: "https://api.plexicus.ai/receive_plexalyzer_message"
+plexalyzer_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiI2NWYwNzlmM2VmODk4ZTZhNmJiMzdlNWIiLCJjcmVhdGVkX2F0IjoiMjAyNC0xMS0wOFQxODowMzo0Mi4yODEyODYifQ.xLegYmnZ7Yfvky5D2riNLwyAPkw3RidkKnk2f3vBeoE"
