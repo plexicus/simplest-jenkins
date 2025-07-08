@@ -1,0 +1,2 @@
+plexalyzer/custom_config.yml
+plexalyzer/jenkins-plexalyzer-cli.groovy

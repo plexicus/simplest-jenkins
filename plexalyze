@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+
+from datetime import datetime
+
+import argparse
+import os
+import platform
+import socket
+import subprocess
+import sys
+import tempfile
+import yaml
+
+def get_hostname():
+    """
+    Get hostname using multiple fallback methods
+    """
+    # Try from environment variable first
+    hostname = os.environ.get('HOSTNAME')
+    if hostname:
+        return hostname
+
+    # Try socket.gethostname()
+    try:
+        return socket.gethostname()
+    except:
+        pass
+
+    # Try platform.node()
+    try:
+        return platform.node()
+    except:
+        pass
+
+    # If on Unix-like system, try os.uname()
+    try:
+        return os.uname().nodename
+    except:
+        pass
+
+    return "unknown-host"  # Fallback value
+
+def check_or_create_plexalyzer_folder(directory: str) -> str:
+    plexalyzer_folder = os.path.join(directory, ".plexalyzer")
+    config_file = os.path.join(plexalyzer_folder, "config.yaml")
+
+    if os.path.exists(config_file):
+        with open(config_file, "r") as f:
+            config = yaml.safe_load(f) or {}
+
+        repository_id = config.get("repository_id")
+
+        if repository_id:
+            print(f"Existing repository_id found: {repository_id}")
+
+            return repository_id
+    else:
+        os.makedirs(plexalyzer_folder, exist_ok=True)
+        os.makedirs(f"{plexalyzer_folder}/logs", exist_ok=True)
+
+        with open(config_file, "w") as f:
+            yaml.dump({"repository_id": None}, f)
+
+        print(f"Created .plexalyzer folder and initialized config.yaml at {config_file}")
+
+    return None
+
+def parse_config(config_path):
+    """Parse the configuration file and extract required fields."""
+    with open(config_path, 'r') as config_file:
+        config_data = yaml.safe_load(config_file)
+
+    message_url = config_data.get("message_url")
+    plexalyzer_token = config_data.get("plexalyzer_token")
+
+    if not message_url or not plexalyzer_token:
+        print("Error: Both 'message_url' and 'plexalyzer_token' must be specified in the config file.")
+
+        sys.exit(1)
+
+    return message_url, plexalyzer_token
+
+def is_git_repo(path):
+    """Check if the given path is a Git repository."""
+    try:
+        subprocess.run(["git", "-C", path, "status"],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+def get_git_changed_files(path):
+    """Get a list of changed files in the Git repository at the given path."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", path, "diff", "--name-only", "HEAD"],
+            stdout=subprocess.PIPE, text=True, check=True
+        )
+        return result.stdout.strip().splitlines()
+    except subprocess.CalledProcessError:
+        print("Error: Failed to get changed files. Ensure the directory is a valid Git repository.")
+        sys.exit(1)
+
+def get_git_branch(repo_path: str) -> str:
+    try:
+        branch = subprocess.check_output(
+            ["git", "-C", repo_path, "rev-parse", "--abbrev-ref", "HEAD"],
+            stderr=subprocess.STDOUT
+        ).strip().decode("utf-8")
+
+        return branch
+    except subprocess.CalledProcessError:
+        print(f"Error: Could not determine the branch in {repo_path}. Is this a Git repository?")
+
+        return None
+
+def main():
+    # Initialize the argument parser
+    parser = argparse.ArgumentParser(
+        description="Run Plexalyzer on a specified directory to analyze its content."
+    )
+
+    # Required positional argument
+    parser.add_argument("path_to_analyze", type=str, help="The path to the directory or file to analyze")
+
+    # Optional arguments
+    parser.add_argument("--only-git-changes", action="store_true",
+                        help="Only analyze changed files in the specified Git repository")
+    parser.add_argument("--config", type=str, default="default_config.yaml",
+                        help="Path to the config file for analysis (default: default_config.yaml)")
+    parser.add_argument("-n", "--name", type=str, help="Name for identifying the scan results")
+    parser.add_argument("--output", type=str, choices=["json", "pretty", "sarif"], default="pretty", help="Specify the output format (json, pretty, sarif)")
+    parser.add_argument("-a", "--auto", action="store_false", help="Enable autonomous scan if set")
+
+    # Optional help command
+    if len(sys.argv) == 2 and sys.argv[1] in {"help", "-h", "--help"}:
+        parser.print_help()
+        sys.exit(0)
+
+    args = parser.parse_args()
+
+    # Verify that the path exists
+    if not os.path.exists(args.path_to_analyze):
+        print(f"Error: The path '{args.path_to_analyze}' does not exist.")
+
+        sys.exit(1)
+
+    if not is_git_repo(args.path_to_analyze):
+        print("Error: You can only scan a Git repository.")
+
+        sys.exit(1)
+
+    message_url, plexalyzer_token = parse_config(f"{os.getenv('PLEXALYZER_CONFIG_PATH', '/home')}/{args.config}")
+    mount_path = os.path.abspath(args.path_to_analyze)
+
+    # Set the default name if not provided
+    scan_name = args.name or os.path.basename(mount_path).lstrip('-')
+    repository_id = check_or_create_plexalyzer_folder(mount_path)
+    log_file = f".plexalyzer/logs/plexalyzer_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+    with open(f"{mount_path}/{log_file}", 'w'):
+        pass
+
+    print(f"Logs will be saved on {log_file}")
+
+    # Prepare Docker command
+    docker_command = [
+        "docker", "run", "--rm",
+        "-v", f"{mount_path}:/mounted_volumes",
+    ]
+
+    # Handle --only-git-changes
+    if args.only_git_changes or repository_id:
+        # Get the list of changed files
+        files_to_analyze = get_git_changed_files(args.path_to_analyze)
+
+        if not files_to_analyze:
+            print("No changed files to analyze.")
+
+            sys.exit(0)
+
+        # Write file paths to a temporary file
+        with tempfile.NamedTemporaryFile("w", delete=False) as temp_file:
+            temp_file_path = temp_file.name
+
+            for file_path in files_to_analyze:
+                temp_file.write(file_path + "\n")
+
+        # Add the file list as an argument to the Docker command
+        docker_command.extend(["-v", f"{temp_file_path}:/app/files_to_analyze.txt"])  # Add volume mount for temp file
+
+    docker_command.extend([
+        "-e", f"MESSAGE_URL={message_url}",
+        "-e", f"PLEXALYZER_TOKEN={plexalyzer_token}",
+        "plexalyzer:latest", "/venvs/plexicus-fastapi/bin/python", "/app/analyze.py",
+        "--config", f"/app/config/{args.config}",
+        "--name", scan_name,
+        "--output", args.output,
+        "--url", f"plex://{get_hostname()}{mount_path}",
+        "--branch", get_git_branch(mount_path),
+        "--log_file", f"/mounted_volumes/{log_file}",
+        "--auto", args.auto
+    ])
+
+    if repository_id:
+        docker_command.extend(["--repository_id", repository_id])
+
+    if args.only_git_changes or repository_id:
+        docker_command.extend(["--files", "/app/files_to_analyze.txt"])
+
+    # Run the Docker command
+    try:
+        if not repository_id:
+            subprocess.Popen(docker_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            print("The repository was correctly configured. "
+                  "You can check the status of the scan here: https://covulor.dev.plexicus.com/repositories")
+        else:
+            subprocess.run(docker_command, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Error executing Docker command: {e}")
+
+        sys.exit(1)
+    finally:
+        # Clean up the temporary file if it was created
+        if args.only_git_changes:
+            os.remove(temp_file_path)
+
+if __name__ == "__main__":
+    main()

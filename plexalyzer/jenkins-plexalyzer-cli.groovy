@@ -7,9 +7,10 @@ pipeline {
         choice(name: 'OUTPUT_FORMAT', choices: ['pretty', 'json', 'sarif'], description: 'Output format')
         string(name: 'DEFAULT_OWNER', defaultValue: 'plexicus', description: 'Default owner')
         string(name: 'REPOSITORY_ID', defaultValue: '', description: 'Repository ID')
-        string(name: 'HOST_PROJECT_PATH', defaultValue: '/home/juanj/Documents/plexicus/simplest-jenkins', description: 'Host project path')
+        string(name: 'HOST_PROJECT_PATH', defaultValue: '${env.HOSTNAME}${env.WORKSPACE}', description: 'Host project path')
         string(name: 'HOST_MACHINE_HOSTNAME', defaultValue: '', description: 'Host machine hostname (leave empty to auto-detect)')
         booleanParam(name: 'AUTONOMOUS_SCAN', defaultValue: false, description: 'Autonomous scan')
+        booleanParam(name: 'ONLY_GIT_CHANGES', defaultValue: false, description: 'Only analyze changed files in Git repository')
     }
     
     environment {
@@ -21,6 +22,7 @@ pipeline {
         stage('Setup Repository URL') {
             steps {
                 script {
+                    echo "Container hostname: ${env.HOSTNAME}"
                     // Determine the host machine hostname
                     def hostname
                     if (params.HOST_MACHINE_HOSTNAME && params.HOST_MACHINE_HOSTNAME.trim() != '') {
@@ -49,6 +51,93 @@ pipeline {
         stage('Checkout') {
             steps {
                 checkout scm
+            }
+        }
+        
+        stage('Prepare Changed Files') {
+            when {
+                expression {
+                    return params.ONLY_GIT_CHANGES || (params.REPOSITORY_ID && params.REPOSITORY_ID.trim() != '')
+                }
+            }
+            steps {
+                script {
+                    echo "Analyzing only changed files..."
+                    
+                    // Get the list of changed files using Docker to run git in the HOST_PROJECT_PATH
+                    def changedFiles = ""
+                    
+                    try {
+                        echo "Getting changed files from ${params.HOST_PROJECT_PATH} using Docker..."
+                        
+                        // First, check if it's a valid git repository
+                        def gitCheck = sh(
+                            script: """
+                                docker run --rm \
+                                    -v "${params.HOST_PROJECT_PATH}:/repo" \
+                                    -w /repo \
+                                    alpine \
+                                    sh -c 'apk add --no-cache git && git config --global --add safe.directory /repo && git status --porcelain'
+                            """,
+                            returnStatus: true
+                        )
+                        
+                        if (gitCheck != 0) {
+                            echo "Not a valid git repository in ${params.HOST_PROJECT_PATH}"
+                            echo "Falling back to full repository analysis"
+                            env.ANALYZE_CHANGED_FILES = 'false'
+                            return
+                        }
+                        
+                        // Get changed files
+                        changedFiles = sh(
+                            script: """
+                                docker run --rm \
+                                    -v "${params.HOST_PROJECT_PATH}:/repo" \
+                                    -w /repo \
+                                    alpine \
+                                    sh -c 'apk add --no-cache git >/dev/null 2>&1 && git config --global --add safe.directory /repo && git diff --name-only HEAD~1..HEAD'
+                            """,
+                            returnStdout: true
+                        ).trim()
+                        
+                        echo "Git diff executed successfully"
+                        
+                    } catch (Exception gitError) {
+                        echo "Git diff failed: ${gitError.message}"
+                        echo "Falling back to full repository analysis"
+                        env.ANALYZE_CHANGED_FILES = 'false'
+                        return
+                    }
+                    
+                    if (!changedFiles || changedFiles.trim() == '') {
+                        echo "No changed files detected. Exiting."
+                        currentBuild.result = 'SUCCESS'
+                        return
+                    }
+                    
+                    echo "Changed files found:"
+                    echo changedFiles
+                    
+                    // Create plexalyzer directory and write changed files using Docker on the host
+                    def changedFilesContent = changedFiles.split('\n').findAll { it.trim() != '' }.join('\n')
+                    def changedFilesPath = "${params.HOST_PROJECT_PATH}/plexalyzer/changed_files.txt"
+                    
+                    // Create the file on the host using Docker
+                    sh """
+                        docker run --rm \
+                            -v "${params.HOST_PROJECT_PATH}:/host_project" \
+                            alpine \
+                            sh -c 'mkdir -p /host_project/plexalyzer && echo "${changedFilesContent}" > /host_project/plexalyzer/changed_files.txt'
+                    """
+                    
+                    // Set environment variable to indicate we're using changed files
+                    env.ANALYZE_CHANGED_FILES = 'true'
+                    env.CHANGED_FILES_COUNT = changedFiles.split('\n').findAll { it.trim() != '' }.size().toString()
+                    env.CHANGED_FILES_PATH = changedFilesPath
+                    
+                    echo "Created changed_files.txt with ${env.CHANGED_FILES_COUNT} files at: ${changedFilesPath}"
+                }
             }
         }
         
@@ -91,7 +180,9 @@ pipeline {
                     
                     def analysisCommand = """
                         docker run --rm \
-                            -v "${params.HOST_PROJECT_PATH}:/mounted_volumes" \
+                            --volumes-from ${env.HOSTNAME} \
+                            -v ${env.WORKSPACE}:/mounted_volumes \
+                            ${env.CHANGED_FILES_PATH ? '-v ' + env.CHANGED_FILES_PATH + ':/app/files_to_analyze.txt' : ''} \
                             -e MESSAGE_URL=https://api.app.dev.plexicus.ai/receive_plexalyzer_message \
                             -e PLEXALYZER_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiI2NWYwNzlmM2VmODk4ZTZhNmJiMzdlNWIiLCJjcmVhdGVkX2F0IjoiMjAyNC0xMS0wOFQxODowMzo0Mi4yODEyODYifQ.xLegYmnZ7Yfvky5D2riNLwyAPkw3RidkKnk2f3vBeoE \
                             ${DOCKER_IMAGE} \
@@ -105,17 +196,26 @@ pipeline {
                             --log_file '/mounted_volumes/plexalyzer/${logFileName}' \
                             --no-progress-bar \
                             ${params.REPOSITORY_ID ? '--repository_id ' + params.REPOSITORY_ID : ''} \
-                            ${params.AUTONOMOUS_SCAN ? '--auto' : ''} > plexalyzer_output.txt 2>&1
+                            ${params.AUTONOMOUS_SCAN ? '--auto' : ''} \
+                            ${env.ANALYZE_CHANGED_FILES ? '--files /app/files_to_analyze.txt' : ''} > plexalyzer_output.txt 2>&1
                     """
                     
                     echo "Executing analysis command..."
                     echo "Log file will be saved as: ${logFileName}"
                     
+                    if (env.ANALYZE_CHANGED_FILES == 'true') {
+                        echo "🔍 Analyzing ${env.CHANGED_FILES_COUNT} changed files only"
+                    } else {
+                        echo "🔍 Analyzing entire repository"
+                    }
+                    
                     def exitCode = sh(
                         script: analysisCommand,
                         returnStatus: true
                     )
-                    
+
+                    echo "Analysis output: "
+                    sh "cat plexalyzer_output.txt"
                     echo "Exit code: ${exitCode}"
                     
                     // Exit code indicates if vulnerabilities were found
@@ -123,10 +223,13 @@ pipeline {
                     
                     if (exitCode == 500) {
                         error "Fatal error in security analysis"
-                    } else if (exitCode == 1) {
-                        echo "Scan completed successfully"
                     } else if (exitCode == 0) {
-                        echo "Scan completed successfully"
+                        echo "✅ Scan completed successfully"
+                    } else if (exitCode == 1) {
+                        echo "✅ Scan completed successfully"
+                    } else if (exitCode == 2) {
+                        echo "⚠️  Scan completed successfully"
+                        currentBuild.result = 'UNSTABLE'
                     } else {
                         echo "❌ Analysis failed with exit code: ${exitCode}"
                         error "Analysis failed with exit code: ${exitCode}. Check the output for details."
@@ -137,8 +240,23 @@ pipeline {
     }
     
     post {
+        always {
+            script {
+                // Clean up temporary files
+                if (env.ANALYZE_CHANGED_FILES == 'true') {
+                    sh "rm -f ${env.CHANGED_FILES_PATH}"
+                    echo "Cleaned up temporary files: ${env.CHANGED_FILES_PATH}"
+                }
+            }
+        }
+        
         success {
-            echo "✅ Security analysis completed successfully, you can check the status of the scan here: https://app.plexicus.ai/repositories"
+            script {
+                def analysisType = env.ANALYZE_CHANGED_FILES == 'true' ? 
+                    "incremental analysis (${env.CHANGED_FILES_COUNT} files)" : 
+                    "full repository analysis"
+                echo "✅ Security ${analysisType} completed successfully, you can check the status of the scan here: https://app.plexicus.ai/repositories"
+            }
         }
         
         failure {
