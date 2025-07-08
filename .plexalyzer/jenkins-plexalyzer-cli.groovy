@@ -7,7 +7,6 @@ pipeline {
         choice(name: 'OUTPUT_FORMAT', choices: ['pretty', 'json', 'sarif'], description: 'Output format')
         string(name: 'DEFAULT_OWNER', defaultValue: 'plexicus', description: 'Default owner')
         string(name: 'REPOSITORY_ID', defaultValue: '', description: 'Repository ID')
-        string(name: 'HOST_PROJECT_PATH', defaultValue: '/home/juanj/Documents/plexicus/simplest-jenkins', description: 'Host project path')
         string(name: 'HOST_MACHINE_HOSTNAME', defaultValue: '', description: 'Host machine hostname (leave empty to auto-detect)')
         booleanParam(name: 'AUTONOMOUS_SCAN', defaultValue: false, description: 'Autonomous scan')
     }
@@ -18,34 +17,6 @@ pipeline {
     }
     
     stages {
-        stage('Setup Repository URL') {
-            steps {
-                script {
-                    // Determine the host machine hostname
-                    def hostname
-                    if (params.HOST_MACHINE_HOSTNAME && params.HOST_MACHINE_HOSTNAME.trim() != '') {
-                        hostname = params.HOST_MACHINE_HOSTNAME.trim()
-                        echo "Using provided hostname: ${hostname}"
-                    } else {
-                        // Try to get hostname from host machine using Docker
-                        try {
-                            hostname = sh(
-                                script: 'docker run --rm --network host alpine hostname',
-                                returnStdout: true
-                            ).trim()
-                            echo "Auto-detected hostname: ${hostname}"
-                        } catch (Exception e) {
-                            echo "Warning: Could not auto-detect hostname, using 'localhost'"
-                            hostname = 'localhost'
-                        }
-                    }
-                    
-                    env.REPOSITORY_URL = "plex://${hostname}${params.HOST_PROJECT_PATH}"
-                    echo "Repository URL configured: ${env.REPOSITORY_URL}"
-                }
-            }
-        }
-        
         stage('Checkout') {
             steps {
                 checkout scm
@@ -91,21 +62,21 @@ pipeline {
                     
                     def analysisCommand = """
                         docker run --rm \
-                            -v "${params.HOST_PROJECT_PATH}:/mounted_volumes" \
+                            --volumes-from ${env.HOSTNAME} \
                             -e MESSAGE_URL=https://api.app.dev.plexicus.ai/receive_plexalyzer_message \
                             -e PLEXALYZER_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiI2NWYwNzlmM2VmODk4ZTZhNmJiMzdlNWIiLCJjcmVhdGVkX2F0IjoiMjAyNC0xMS0wOFQxODowMzo0Mi4yODEyODYifQ.xLegYmnZ7Yfvky5D2riNLwyAPkw3RidkKnk2f3vBeoE \
                             ${DOCKER_IMAGE} \
-                            /venvs/plexicus-fastapi/bin/python /app/analyze.py \
-                            --config "/mounted_volumes/plexalyzer/custom_config.yml" \
+                            sh -c "ln -sf ${env.WORKSPACE} /mounted_volumes && /venvs/plexicus-fastapi/bin/python /app/analyze.py \
+                            --config /mounted_volumes/.plexalyzer/custom_config.yml \
                             --name '${params.PROJECT_NAME ?: env.JOB_NAME}' \
                             --output '${params.OUTPUT_FORMAT}' \
                             --owner '${params.DEFAULT_OWNER}' \
-                            --url '${env.REPOSITORY_URL}' \
+                            --url 'plex://${env.HOSTNAME}${env.WORKSPACE}' \
                             --branch '${params.BRANCH_NAME ?: env.GIT_BRANCH}' \
-                            --log_file '/mounted_volumes/plexalyzer/${logFileName}' \
+                            --log_file '/mounted_volumes/.plexalyzer/${logFileName}' \
                             --no-progress-bar \
                             ${params.REPOSITORY_ID ? '--repository_id ' + params.REPOSITORY_ID : ''} \
-                            ${params.AUTONOMOUS_SCAN ? '--auto' : ''} > plexalyzer_output.txt 2>&1
+                            ${params.AUTONOMOUS_SCAN ? '--auto' : ''}" > plexalyzer_output.txt 2>&1
                     """
                     
                     echo "Executing analysis command..."
@@ -115,6 +86,9 @@ pipeline {
                         script: analysisCommand,
                         returnStatus: true
                     )
+
+                    echo "Analysis output: "
+                    sh "cat plexalyzer_output.txt"
                     
                     echo "Exit code: ${exitCode}"
                     
