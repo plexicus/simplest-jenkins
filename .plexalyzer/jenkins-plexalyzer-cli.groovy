@@ -22,6 +22,36 @@ pipeline {
                 checkout scm
             }
         }
+
+        stage('Pull Docker Image') {
+            steps {
+                script {
+                    // Check if Docker is available
+                    def dockerAvailable = sh(
+                        script: 'which docker',
+                        returnStatus: true
+                    )
+                    
+                    if (dockerAvailable != 0) {
+                        error "Docker is not available on this Jenkins agent. Please ensure Docker is installed and accessible."
+                    }
+                    
+                    // Check Docker daemon status
+                    def dockerDaemon = sh(
+                        script: 'docker info',
+                        returnStatus: true
+                    )
+                    
+                    if (dockerDaemon != 0) {
+                        error "Docker daemon is not running or not accessible. Please start Docker service."
+                    }
+                    
+                    echo "Downloading Plexalyzer Docker image from Docker Hub..."
+                    sh "docker pull ${DOCKER_IMAGE}"
+                    echo "✅ Docker image downloaded successfully"
+                }
+            }
+        }
         
         stage('Prepare Changed Files') {
             when {
@@ -93,39 +123,8 @@ pipeline {
                     // Set environment variable to indicate we're using changed files
                     env.ANALYZE_CHANGED_FILES = 'true'
                     env.CHANGED_FILES_COUNT = changedFiles.split('\n').findAll { it.trim() != '' }.size().toString()
-                    env.CHANGED_FILES_PATH = changedFilesPath
                     
                     echo "Created changed_files.txt with ${env.CHANGED_FILES_COUNT} files at: ${changedFilesPath}"
-                }
-            }
-        }
-        
-        stage('Pull Docker Image') {
-            steps {
-                script {
-                    // Check if Docker is available
-                    def dockerAvailable = sh(
-                        script: 'which docker',
-                        returnStatus: true
-                    )
-                    
-                    if (dockerAvailable != 0) {
-                        error "Docker is not available on this Jenkins agent. Please ensure Docker is installed and accessible."
-                    }
-                    
-                    // Check Docker daemon status
-                    def dockerDaemon = sh(
-                        script: 'docker info',
-                        returnStatus: true
-                    )
-                    
-                    if (dockerDaemon != 0) {
-                        error "Docker daemon is not running or not accessible. Please start Docker service."
-                    }
-                    
-                    echo "Downloading Plexalyzer Docker image from Docker Hub..."
-                    sh "docker pull ${DOCKER_IMAGE}"
-                    echo "✅ Docker image downloaded successfully"
                 }
             }
         }
@@ -138,23 +137,23 @@ pipeline {
                     def logFileName = "plexalyzer_${timestamp}.log"
                     
                     def analysisCommand = """
-                        docker run --rm \
-                            --volumes-from ${env.HOSTNAME} \
-                            -e MESSAGE_URL=https://api.app.dev.plexicus.ai/receive_plexalyzer_message \
-                            -e PLEXALYZER_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiI2NWYwNzlmM2VmODk4ZTZhNmJiMzdlNWIiLCJjcmVhdGVkX2F0IjoiMjAyNC0xMS0wOFQxODowMzo0Mi4yODEyODYifQ.xLegYmnZ7Yfvky5D2riNLwyAPkw3RidkKnk2f3vBeoE \
-                            ${DOCKER_IMAGE} \
-                            sh -c "ln -sf ${env.WORKSPACE} /mounted_volumes && /venvs/plexicus-fastapi/bin/python /app/analyze.py \
-                            --config /mounted_volumes/.plexalyzer/custom_config.yml \
-                            --name '${params.PROJECT_NAME ?: env.JOB_NAME}' \
-                            --output '${params.OUTPUT_FORMAT}' \
-                            --owner '${params.DEFAULT_OWNER}' \
-                            --url 'plex://${env.HOSTNAME}${env.WORKSPACE}' \
-                            --branch '${params.BRANCH_NAME ?: env.GIT_BRANCH}' \
-                            --log_file '/mounted_volumes/.plexalyzer/${logFileName}' \
-                            --no-progress-bar \
-                            ${params.REPOSITORY_ID ? '--repository_id ' + params.REPOSITORY_ID : ''} \
-                            ${params.AUTONOMOUS_SCAN ? '--auto' : ''} \
-                            ${env.ANALYZE_CHANGED_FILES ? '--files /mounted_volumes/.plexalyzer/changed_files.txt' : ''} > plexalyzer_output.txt 2>&1
+                        docker run --rm \\
+                            --volumes-from ${env.HOSTNAME} \\
+                            -e MESSAGE_URL=https://api.app.dev.plexicus.ai/receive_plexalyzer_message \\
+                            -e PLEXALYZER_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiI2NWYwNzlmM2VmODk4ZTZhNmJiMzdlNWIiLCJjcmVhdGVkX2F0IjoiMjAyNC0xMS0wOFQxODowMzo0Mi4yODEyODYifQ.xLegYmnZ7Yfvky5D2riNLwyAPkw3RidkKnk2f3vBeoE \\
+                            ${DOCKER_IMAGE} \\
+                            sh -c 'ln -sf ${env.WORKSPACE} /mounted_volumes && /venvs/plexicus-fastapi/bin/python /app/analyze.py \\
+                            --config /mounted_volumes/.plexalyzer/custom_config.yml \\
+                            --name "${params.PROJECT_NAME ?: env.JOB_NAME}" \\
+                            --output "${params.OUTPUT_FORMAT}" \\
+                            --owner "${params.DEFAULT_OWNER}" \\
+                            --url "plex://${env.HOSTNAME}${env.WORKSPACE}" \\
+                            --branch "${params.BRANCH_NAME ?: env.GIT_BRANCH}" \\
+                            --log_file "/mounted_volumes/.plexalyzer/${logFileName}" \\
+                            --no-progress-bar \\
+                            ${params.REPOSITORY_ID ? '--repository_id ' + params.REPOSITORY_ID : ''} \\
+                            ${params.AUTONOMOUS_SCAN ? '--auto' : ''} \\
+                            ${env.ANALYZE_CHANGED_FILES ? '--files /mounted_volumes/.plexalyzer/changed_files.txt' : ''}' > plexalyzer_output.txt 2>&1
                     """
                     
                     echo "Executing analysis command..."
@@ -197,17 +196,7 @@ pipeline {
         }
     }
     
-    post {
-        always {
-            script {
-                // Clean up temporary files
-                if (env.ANALYZE_CHANGED_FILES == 'true') {
-                    sh "rm -f ${env.CHANGED_FILES_PATH}"
-                    echo "Cleaned up temporary files: ${env.CHANGED_FILES_PATH}"
-                }
-            }
-        }
-        
+    post { 
         success {
             script {
                 def analysisType = env.ANALYZE_CHANGED_FILES == 'true' ? 
