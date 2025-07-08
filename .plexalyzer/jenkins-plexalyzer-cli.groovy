@@ -9,6 +9,7 @@ pipeline {
         string(name: 'REPOSITORY_ID', defaultValue: '', description: 'Repository ID')
         booleanParam(name: 'AUTONOMOUS_SCAN', defaultValue: false, description: 'Autonomous scan')
         booleanParam(name: 'ONLY_GIT_CHANGES', defaultValue: false, description: 'Only analyze changed files in Git repository')
+        booleanParam(name: 'PROGRESS_BAR', defaultValue: true, description: 'Progress bar')
     }
     
     environment {
@@ -150,10 +151,10 @@ pipeline {
                             --url "plex://${env.HOSTNAME}${env.WORKSPACE}" \\
                             --branch "${params.BRANCH_NAME ?: env.GIT_BRANCH}" \\
                             --log_file "/mounted_volumes/.plexalyzer/${logFileName}" \\
-                            --no-progress-bar \\
+                            ${params.PROGRESS_BAR ? '' : '--no-progress-bar'} \\
                             ${params.REPOSITORY_ID ? '--repository_id ' + params.REPOSITORY_ID : ''} \\
                             ${params.AUTONOMOUS_SCAN ? '--auto' : ''} \\
-                            ${env.ANALYZE_CHANGED_FILES ? '--files /mounted_volumes/.plexalyzer/changed_files.txt' : ''}' > plexalyzer_output.txt 2>&1
+                            ${env.ANALYZE_CHANGED_FILES ? '--files /mounted_volumes/.plexalyzer/changed_files.txt' : ''}' 2>&1 | tee plexalyzer_output.txt
                     """
                     
                     echo "Executing analysis command..."
@@ -165,13 +166,31 @@ pipeline {
                         echo "🔍 Analyzing entire repository"
                     }
                     
-                    def exitCode = sh(
-                        script: analysisCommand,
-                        returnStatus: true
-                    )
-
-                    echo "Analysis output: "
-                    sh "cat plexalyzer_output.txt"
+                    // Try to use ansiColor plugin with direct method detection
+                    def exitCode
+                    try {
+                        // Attempt to use ansiColor directly - if it fails, we'll catch the error
+                        echo "🎨 Attempting to use AnsiColor plugin for better output formatting..."
+                        ansiColor('xterm') {
+                            exitCode = sh(
+                                script: analysisCommand,
+                                returnStatus: true
+                            )
+                        }
+                        echo "✅ AnsiColor plugin used successfully"
+                    } catch (NoSuchMethodError e) {
+                        echo "ℹ️  AnsiColor plugin not available - using standard output"
+                        exitCode = sh(
+                            script: analysisCommand,
+                            returnStatus: true
+                        )
+                    } catch (Exception e) {
+                        echo "⚠️  AnsiColor plugin failed, falling back to standard output: ${e.message}"
+                        exitCode = sh(
+                            script: analysisCommand,
+                            returnStatus: true
+                        )
+                    }
                     
                     echo "Exit code: ${exitCode}"
                     
