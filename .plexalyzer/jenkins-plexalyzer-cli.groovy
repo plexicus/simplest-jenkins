@@ -6,8 +6,9 @@ pipeline {
         string(name: 'BRANCH_NAME', defaultValue: 'main', description: 'Branch to analyze')
         choice(name: 'OUTPUT_FORMAT', choices: ['pretty', 'json', 'sarif'], description: 'Output format')
         string(name: 'DEFAULT_OWNER', defaultValue: 'plexicus', description: 'Default owner')
-        string(name: 'REPOSITORY_ID', defaultValue: '', description: 'Repository ID')=
+        string(name: 'REPOSITORY_ID', defaultValue: '', description: 'Repository ID')
         booleanParam(name: 'AUTONOMOUS_SCAN', defaultValue: false, description: 'Autonomous scan')
+        booleanParam(name: 'ONLY_GIT_CHANGES', defaultValue: false, description: 'Only analyze changed files in Git repository')
     }
     
     environment {
@@ -19,6 +20,83 @@ pipeline {
         stage('Checkout') {
             steps {
                 checkout scm
+            }
+        }
+        
+        stage('Prepare Changed Files') {
+            when {
+                expression {
+                    return params.ONLY_GIT_CHANGES || (params.REPOSITORY_ID && params.REPOSITORY_ID.trim() != '')
+                }
+            }
+            steps {
+                script {
+                    echo "Analyzing only changed files..."
+                    
+                    // Get the list of changed files using Docker to run git in the HOST_PROJECT_PATH
+                    def changedFiles = ""
+                    
+                    try {
+                        echo "Getting changed files from ${env.WORKSPACE} using Docker..."
+                        
+                        // First, check if it's a valid git repository without using Docker
+                        def gitCheck = sh(
+                            script: """
+                                git -C "${env.WORKSPACE}" status --porcelain
+                            """,
+                            returnStatus: true
+                        )
+                        
+                        if (gitCheck != 0) {
+                            echo "Not a valid git repository in ${env.WORKSPACE}"
+                            echo "Falling back to full repository analysis"
+                            env.ANALYZE_CHANGED_FILES = 'false'
+                            return
+                        }
+                        
+                        // Get changed files without using Docker
+                        changedFiles = sh(
+                            script: """
+                                git -C "${env.WORKSPACE}" diff --name-only HEAD~1..HEAD
+                            """,
+                            returnStdout: true
+                        ).trim()
+                        
+                        echo "Git diff executed successfully"
+                        
+                    } catch (Exception gitError) {
+                        echo "Git diff failed: ${gitError.message}"
+                        echo "Falling back to full repository analysis"
+                        env.ANALYZE_CHANGED_FILES = 'false'
+                        return
+                    }
+                    
+                    if (!changedFiles || changedFiles.trim() == '') {
+                        echo "No changed files detected. Exiting."
+                        currentBuild.result = 'SUCCESS'
+                        return
+                    }
+                    
+                    echo "Changed files found:"
+                    echo changedFiles
+                    
+                    // Create plexalyzer directory and write changed files using Docker on the host
+                    def changedFilesContent = changedFiles.split('\n').findAll { it.trim() != '' }.join('\n')
+                    def changedFilesPath = "${env.WORKSPACE}/.plexalyzer/changed_files.txt"
+                    
+                    // Create the file on the workspace, .plexalyzer folder
+                    sh """
+                        mkdir -p ${env.WORKSPACE}/.plexalyzer
+                        echo "${changedFilesContent}" > ${env.WORKSPACE}/.plexalyzer/changed_files.txt
+                    """
+                    
+                    // Set environment variable to indicate we're using changed files
+                    env.ANALYZE_CHANGED_FILES = 'true'
+                    env.CHANGED_FILES_COUNT = changedFiles.split('\n').findAll { it.trim() != '' }.size().toString()
+                    env.CHANGED_FILES_PATH = changedFilesPath
+                    
+                    echo "Created changed_files.txt with ${env.CHANGED_FILES_COUNT} files at: ${changedFilesPath}"
+                }
             }
         }
         
@@ -75,11 +153,18 @@ pipeline {
                             --log_file '/mounted_volumes/.plexalyzer/${logFileName}' \
                             --no-progress-bar \
                             ${params.REPOSITORY_ID ? '--repository_id ' + params.REPOSITORY_ID : ''} \
-                            ${params.AUTONOMOUS_SCAN ? '--auto' : ''}" > plexalyzer_output.txt 2>&1
+                            ${params.AUTONOMOUS_SCAN ? '--auto' : ''} \
+                            ${env.ANALYZE_CHANGED_FILES ? '--files /mounted_volumes/.plexalyzer/changed_files.txt' : ''} > plexalyzer_output.txt 2>&1
                     """
                     
                     echo "Executing analysis command..."
                     echo "Log file will be saved as: ${logFileName}"
+                    
+                    if (env.ANALYZE_CHANGED_FILES == 'true') {
+                        echo "🔍 Analyzing ${env.CHANGED_FILES_COUNT} changed files only"
+                    } else {
+                        echo "🔍 Analyzing entire repository"
+                    }
                     
                     def exitCode = sh(
                         script: analysisCommand,
@@ -96,10 +181,13 @@ pipeline {
                     
                     if (exitCode == 500) {
                         error "Fatal error in security analysis"
-                    } else if (exitCode == 1) {
-                        echo "Scan completed successfully"
                     } else if (exitCode == 0) {
-                        echo "Scan completed successfully"
+                        echo "✅ Scan completed successfully"
+                    } else if (exitCode == 1) {
+                        echo "✅ Scan completed successfully"
+                    } else if (exitCode == 2) {
+                        echo "⚠️  Scan completed successfully"
+                        currentBuild.result = 'UNSTABLE'
                     } else {
                         echo "❌ Analysis failed with exit code: ${exitCode}"
                         error "Analysis failed with exit code: ${exitCode}. Check the output for details."
@@ -110,8 +198,23 @@ pipeline {
     }
     
     post {
+        always {
+            script {
+                // Clean up temporary files
+                if (env.ANALYZE_CHANGED_FILES == 'true') {
+                    sh "rm -f ${env.CHANGED_FILES_PATH}"
+                    echo "Cleaned up temporary files: ${env.CHANGED_FILES_PATH}"
+                }
+            }
+        }
+        
         success {
-            echo "✅ Security analysis completed successfully, you can check the status of the scan here: https://app.plexicus.ai/repositories"
+            script {
+                def analysisType = env.ANALYZE_CHANGED_FILES == 'true' ? 
+                    "incremental analysis (${env.CHANGED_FILES_COUNT} files)" : 
+                    "full repository analysis"
+                echo "✅ Security ${analysisType} completed successfully, you can check the status of the scan here: https://app.plexicus.ai/repositories"
+            }
         }
         
         failure {
