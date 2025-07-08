@@ -85,6 +85,10 @@ pipeline {
         stage('Security Analysis') {
             steps {
                 script {
+                    // Generate timestamp for log file
+                    def timestamp = new Date().format('yyyy-MM-dd_HH-mm-ss')
+                    def logFileName = "plexalyzer_${timestamp}.log"
+                    
                     def analysisCommand = """
                         docker run --rm \
                             -v "${params.HOST_PROJECT_PATH}:/mounted_volumes" \
@@ -92,19 +96,20 @@ pipeline {
                             -e PLEXALYZER_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiI2NWYwNzlmM2VmODk4ZTZhNmJiMzdlNWIiLCJjcmVhdGVkX2F0IjoiMjAyNC0xMS0wOFQxODowMzo0Mi4yODEyODYifQ.xLegYmnZ7Yfvky5D2riNLwyAPkw3RidkKnk2f3vBeoE \
                             ${DOCKER_IMAGE} \
                             /venvs/plexicus-fastapi/bin/python /app/analyze.py \
-                            --config "/mounted_volumes/.plexalyzer/custom_config.yml" \
+                            --config "/mounted_volumes/plexalyzer/custom_config.yml" \
                             --name '${params.PROJECT_NAME ?: env.JOB_NAME}' \
                             --output '${params.OUTPUT_FORMAT}' \
                             --owner '${params.DEFAULT_OWNER}' \
                             --url '${env.REPOSITORY_URL}' \
                             --branch '${params.BRANCH_NAME ?: env.GIT_BRANCH}' \
-                            --log_file '/mounted_volumes/.plexalyzer/plexalyzer.log' \
+                            --log_file '/mounted_volumes/plexalyzer/${logFileName}' \
                             --no-progress-bar \
                             ${params.REPOSITORY_ID ? '--repository_id ' + params.REPOSITORY_ID : ''} \
                             ${params.AUTONOMOUS_SCAN ? '--auto' : ''} > plexalyzer_output.txt 2>&1
                     """
                     
                     echo "Executing analysis command..."
+                    echo "Log file will be saved as: ${logFileName}"
                     
                     def exitCode = sh(
                         script: analysisCommand,
@@ -115,8 +120,6 @@ pipeline {
                     
                     // Exit code indicates if vulnerabilities were found
                     env.ANALYSIS_EXIT_CODE = exitCode.toString()
-
-                    echo "Analysis output: ${readFile('plexalyzer_output.txt')}"
                     
                     if (exitCode == 500) {
                         error "Fatal error in security analysis"
