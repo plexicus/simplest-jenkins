@@ -4,12 +4,16 @@ excluded_tools:
   - syft
   - trivy-sbom
   - bandit
-
-# Tools to specifically include (optional)
-included_tools:
+  - trivy-sca
   - opengrep
-  - kics
-  - hadolint
+  - kics-container
+  - trivy-license
+
+# # Tools to specifically include (optional)
+# included_tools:
+#   - opengrep
+#   - kics
+#   - hadolint
 
 # # Specific tool configuration
 # semgrep_cli:
@@ -40,6 +44,3 @@ included_tools:
 #   client_id: "my-client-id"
 #   client_secret: "my-client-secret"
 #   release_id: "my-release-id"
-
-message_url: "https://api.plexicus.ai/receive_plexalyzer_message"
-plexalyzer_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiI2NWYwNzlmM2VmODk4ZTZhNmJiMzdlNWIiLCJjcmVhdGVkX2F0IjoiMjAyNC0xMS0wOFQxODowMzo0Mi4yODEyODYifQ.xLegYmnZ7Yfvky5D2riNLwyAPkw3RidkKnk2f3vBeoE"
