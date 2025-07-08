@@ -6,8 +6,7 @@ pipeline {
         string(name: 'BRANCH_NAME', defaultValue: 'main', description: 'Branch to analyze')
         choice(name: 'OUTPUT_FORMAT', choices: ['pretty', 'json', 'sarif'], description: 'Output format')
         string(name: 'DEFAULT_OWNER', defaultValue: 'plexicus', description: 'Default owner')
-        string(name: 'REPOSITORY_ID', defaultValue: '', description: 'Repository ID')
-        string(name: 'HOST_MACHINE_HOSTNAME', defaultValue: '', description: 'Host machine hostname (leave empty to auto-detect)')
+        string(name: 'REPOSITORY_ID', defaultValue: '', description: 'Repository ID')=
         booleanParam(name: 'AUTONOMOUS_SCAN', defaultValue: false, description: 'Autonomous scan')
     }
     
