@@ -8,16 +8,44 @@ pipeline {
         string(name: 'DEFAULT_OWNER', defaultValue: 'plexicus', description: 'Default owner')
         string(name: 'REPOSITORY_ID', defaultValue: '', description: 'Repository ID')
         string(name: 'HOST_PROJECT_PATH', defaultValue: '/home/juanj/Documents/plexicus/simplest-jenkins', description: 'Host project path')
+        string(name: 'HOST_MACHINE_HOSTNAME', defaultValue: '', description: 'Host machine hostname (leave empty to auto-detect)')
         booleanParam(name: 'AUTONOMOUS_SCAN', defaultValue: false, description: 'Autonomous scan')
     }
     
     environment {
         DOCKER_IMAGE = 'plexicus/plexalyzer:latest'
         CONFIG_PATH = '/app/config/default_config.yaml'
-        REPOSITORY_URL = "plex://${HOSTNAME}${WORKSPACE}"
     }
     
     stages {
+        stage('Setup Repository URL') {
+            steps {
+                script {
+                    // Determine the host machine hostname
+                    def hostname
+                    if (params.HOST_MACHINE_HOSTNAME && params.HOST_MACHINE_HOSTNAME.trim() != '') {
+                        hostname = params.HOST_MACHINE_HOSTNAME.trim()
+                        echo "Using provided hostname: ${hostname}"
+                    } else {
+                        // Try to get hostname from host machine using Docker
+                        try {
+                            hostname = sh(
+                                script: 'docker run --rm --network host alpine hostname',
+                                returnStdout: true
+                            ).trim()
+                            echo "Auto-detected hostname: ${hostname}"
+                        } catch (Exception e) {
+                            echo "Warning: Could not auto-detect hostname, using 'localhost'"
+                            hostname = 'localhost'
+                        }
+                    }
+                    
+                    env.REPOSITORY_URL = "plex://${hostname}${params.HOST_PROJECT_PATH}"
+                    echo "Repository URL configured: ${env.REPOSITORY_URL}"
+                }
+            }
+        }
+        
         stage('Checkout') {
             steps {
                 checkout scm
