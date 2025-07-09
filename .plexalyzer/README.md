@@ -7,15 +7,21 @@ A Jenkins pipeline for automated security analysis using Plexalyzer's comprehens
 ### Jenkins Requirements
 
 1. **Jenkins Server** with Docker support
-2. **AnsiColor Plugin** (Recommended) - For better terminal output visualization
+2. **Docker-in-Docker (DinD) enabled** - This script is specifically designed to run on Jenkins with Docker-in-Docker capabilities
+   - Jenkins must be running in a Docker container with Docker socket mounted or DinD configured
+   - The Jenkins agent must have access to Docker daemon
+3. **AnsiColor Plugin** (Recommended) - For better terminal output visualization
    - Install via: `Manage Jenkins` → `Plugins` → `Available` → Search for "AnsiColor"
    - This plugin provides colored output in Jenkins console logs, making scan results more readable
 
 ### System Requirements
 
 - **Docker** installed and running on Jenkins agent
+- **Docker-in-Docker (DinD)** properly configured
 - **Git** access to your repository
 - **Plexalyzer token** (obtained from [Plexicus](https://app.plexicus.ai/))
+
+> **Important**: This pipeline script is specifically designed for Jenkins environments running with Docker and Docker-in-Docker capabilities. It uses Docker volume mounting and container orchestration that requires proper DinD setup.
 
 ## 🏗️ Repository Setup
 
@@ -178,15 +184,21 @@ The pipeline uses the latest Plexalyzer Docker image:
    - Ensure Docker is installed on Jenkins agent
    - Verify Docker daemon is running
 
-2. **Credential errors**
+2. **Docker-in-Docker (DinD) configuration issues**
+   - Ensure Jenkins is running with Docker socket mounted: `-v /var/run/docker.sock:/var/run/docker.sock`
+   - Or configure proper DinD setup with privileged containers
+   - Verify Jenkins agent has Docker access: `docker info` should work from Jenkins
+   - Check that `--volumes-from` flag works properly (used by the pipeline)
+
+3. **Credential errors**
    - Check that `plexalyzer-token` credential exists
    - Verify credential has correct permissions
 
-3. **Git repository issues**
+4. **Git repository issues**
    - Ensure repository is properly initialized
    - Check Git permissions and access
 
-4. **AnsiColor plugin issues**
+5. **AnsiColor plugin issues**
    - Plugin is optional but recommended
    - Pipeline gracefully falls back to standard output
 
