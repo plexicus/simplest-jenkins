@@ -25,7 +25,7 @@ public class UserController {
         return "login";
     }
 
-    // Vulnerable login endpoint with SQL injection
+    // Vulnerable login endpoint with SQL injection.
     @PostMapping("/login")
     public String login(@RequestParam String username, @RequestParam String password, Model model) {
         try {
