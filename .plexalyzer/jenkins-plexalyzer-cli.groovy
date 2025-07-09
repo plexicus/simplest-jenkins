@@ -2,10 +2,10 @@ pipeline {
     agent any
     
     parameters {
-        string(name: 'PROJECT_NAME', defaultValue: 'simplest-jenkins', description: 'Project name')
-        string(name: 'BRANCH_NAME', defaultValue: 'main', description: 'Branch to analyze')
+        string(name: 'PROJECT_NAME', description: 'Project name')
+        string(name: 'BRANCH_NAME', description: 'Branch to analyze')
         choice(name: 'OUTPUT_FORMAT', choices: ['pretty', 'json', 'sarif'], description: 'Output format')
-        string(name: 'DEFAULT_OWNER', defaultValue: 'plexicus', description: 'Default owner')
+        string(name: 'DEFAULT_OWNER', description: 'Default owner')
         string(name: 'REPOSITORY_ID', defaultValue: '', description: 'Repository ID')
         booleanParam(name: 'AUTONOMOUS_SCAN', defaultValue: false, description: 'Autonomous scan')
         booleanParam(name: 'ONLY_GIT_CHANGES', defaultValue: false, description: 'Only analyze changed files in Git repository')
@@ -18,6 +18,36 @@ pipeline {
     }
     
     stages {
+        stage('Validate Required Parameters') {
+            steps {
+                script {
+                    def errors = []
+                    
+                    if (!params.PROJECT_NAME || params.PROJECT_NAME.trim() == '') {
+                        errors.add("PROJECT_NAME is required")
+                    }
+                    
+                    if (!params.BRANCH_NAME || params.BRANCH_NAME.trim() == '') {
+                        errors.add("BRANCH_NAME is required")
+                    }
+                    
+                    if (!params.OUTPUT_FORMAT || params.OUTPUT_FORMAT.trim() == '') {
+                        errors.add("OUTPUT_FORMAT is required")
+                    }
+                    
+                    if (!params.DEFAULT_OWNER || params.DEFAULT_OWNER.trim() == '') {
+                        errors.add("DEFAULT_OWNER is required")
+                    }
+                    
+                    if (errors.size() > 0) {
+                        error("❌ Required parameters missing:\n${errors.join('\n')}")
+                    }
+                    
+                    echo "✅ All required parameters validated successfully"
+                }
+            }
+        }
+
         stage('Checkout') {
             steps {
                 checkout scm
