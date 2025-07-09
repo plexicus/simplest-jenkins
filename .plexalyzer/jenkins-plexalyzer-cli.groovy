@@ -137,78 +137,118 @@ pipeline {
                     def timestamp = new Date().format('yyyy-MM-dd_HH-mm-ss')
                     def logFileName = "plexalyzer_${timestamp}.log"
                     
-                    def analysisCommand = """
-                        docker run --rm \\
-                            --volumes-from ${env.HOSTNAME} \\
-                            -e MESSAGE_URL=https://api.app.dev.plexicus.ai/receive_plexalyzer_message \\
-                            -e PLEXALYZER_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiI2NWYwNzlmM2VmODk4ZTZhNmJiMzdlNWIiLCJjcmVhdGVkX2F0IjoiMjAyNC0xMS0wOFQxODowMzo0Mi4yODEyODYifQ.xLegYmnZ7Yfvky5D2riNLwyAPkw3RidkKnk2f3vBeoE \\
-                            ${DOCKER_IMAGE} \\
-                            sh -c 'ln -sf ${env.WORKSPACE} /mounted_volumes && /venvs/plexicus-fastapi/bin/python /app/analyze.py \\
-                            --config /mounted_volumes/.plexalyzer/custom_config.yml \\
-                            --name "${params.PROJECT_NAME ?: env.JOB_NAME}" \\
-                            --output "${params.OUTPUT_FORMAT}" \\
-                            --owner "${params.DEFAULT_OWNER}" \\
-                            --url "plex://${env.HOSTNAME}${env.WORKSPACE}" \\
-                            --branch "${params.BRANCH_NAME ?: env.GIT_BRANCH}" \\
-                            --log_file "/mounted_volumes/.plexalyzer/${logFileName}" \\
-                            ${params.PROGRESS_BAR ? '' : '--no-progress-bar'} \\
-                            ${params.REPOSITORY_ID ? '--repository_id ' + params.REPOSITORY_ID : ''} \\
-                            ${params.AUTONOMOUS_SCAN ? '--auto' : ''} \\
-                            ${env.ANALYZE_CHANGED_FILES ? '--files /mounted_volumes/.plexalyzer/changed_files.txt' : ''}' 2>&1 | tee plexalyzer_output.txt
-                    """
-                    
-                    echo "Executing analysis command..."
-                    echo "Log file will be saved as: ${logFileName}"
-                    
-                    if (env.ANALYZE_CHANGED_FILES == 'true') {
-                        echo "🔍 Analyzing ${env.CHANGED_FILES_COUNT} changed files only"
-                    } else {
-                        echo "🔍 Analyzing entire repository"
-                    }
-                    
-                    // Try to use ansiColor plugin with direct method detection
-                    def exitCode
+                    // Use Jenkins credentials for the Plexalyzer token with error handling
                     try {
-                        // Attempt to use ansiColor directly - if it fails, we'll catch the error
-                        echo "🎨 Attempting to use AnsiColor plugin for better output formatting..."
-                        ansiColor('xterm') {
-                            exitCode = sh(
-                                script: analysisCommand,
-                                returnStatus: true
-                            )
+                        withCredentials([string(credentialsId: 'plexalyzer-token', variable: 'PLEXALYZER_TOKEN')]) {
+                            // Validate that the token was properly retrieved
+                            if (!env.PLEXALYZER_TOKEN || env.PLEXALYZER_TOKEN.trim() == '') {
+                                error "❌ Plexalyzer token is empty or null. Please verify that the 'plexalyzer-token' credential is properly configured in Jenkins."
+                            }
+                            
+                            echo "✅ Plexalyzer token successfully retrieved from Jenkins credentials"
+                            
+                            def analysisCommand = """
+                                docker run --rm \\
+                                    --volumes-from ${env.HOSTNAME} \\
+                                    -e MESSAGE_URL=https://api.app.dev.plexicus.ai/receive_plexalyzer_message \\
+                                    -e PLEXALYZER_TOKEN=\${PLEXALYZER_TOKEN} \\
+                                    ${DOCKER_IMAGE} \\
+                                    sh -c 'ln -sf ${env.WORKSPACE} /mounted_volumes && /venvs/plexicus-fastapi/bin/python /app/analyze.py \\
+                                    --config /mounted_volumes/.plexalyzer/custom_config.yml \\
+                                    --name "${params.PROJECT_NAME ?: env.JOB_NAME}" \\
+                                    --output "${params.OUTPUT_FORMAT}" \\
+                                    --owner "${params.DEFAULT_OWNER}" \\
+                                    --url "plex://${env.HOSTNAME}${env.WORKSPACE}" \\
+                                    --branch "${params.BRANCH_NAME ?: env.GIT_BRANCH}" \\
+                                    --log_file "/mounted_volumes/.plexalyzer/${logFileName}" \\
+                                    ${params.PROGRESS_BAR ? '' : '--no-progress-bar'} \\
+                                    ${params.REPOSITORY_ID ? '--repository_id ' + params.REPOSITORY_ID : ''} \\
+                                    ${params.AUTONOMOUS_SCAN ? '--auto' : ''} \\
+                                    ${env.ANALYZE_CHANGED_FILES ? '--files /mounted_volumes/.plexalyzer/changed_files.txt' : ''}' 2>&1 | tee plexalyzer_output.txt
+                            """
+                            
+                            echo "Executing analysis command..."
+                            echo "Log file will be saved as: ${logFileName}"
+                            
+                            if (env.ANALYZE_CHANGED_FILES == 'true') {
+                                echo "🔍 Analyzing ${env.CHANGED_FILES_COUNT} changed files only"
+                            } else {
+                                echo "🔍 Analyzing entire repository"
+                            }
+                            
+                            // Try to use ansiColor plugin with direct method detection
+                            def exitCode
+                            try {
+                                // Attempt to use ansiColor directly - if it fails, we'll catch the error
+                                echo "🎨 Attempting to use AnsiColor plugin for better output formatting..."
+                                ansiColor('xterm') {
+                                    exitCode = sh(
+                                        script: analysisCommand,
+                                        returnStatus: true
+                                    )
+                                }
+                                echo "✅ AnsiColor plugin used successfully"
+                            } catch (NoSuchMethodError e) {
+                                echo "ℹ️  AnsiColor plugin not available - using standard output"
+                                exitCode = sh(
+                                    script: analysisCommand,
+                                    returnStatus: true
+                                )
+                            } catch (Exception e) {
+                                echo "⚠️  AnsiColor plugin failed, falling back to standard output: ${e.message}"
+                                exitCode = sh(
+                                    script: analysisCommand,
+                                    returnStatus: true
+                                )
+                            }
+                            
+                            echo "Exit code: ${exitCode}"
+                            
+                            // Exit code indicates if vulnerabilities were found
+                            env.ANALYSIS_EXIT_CODE = exitCode.toString()
+                            
+                            if (exitCode == 500) {
+                                error "Fatal error in security analysis"
+                            } else if (exitCode == 0) {
+                                echo "✅ Scan completed successfully"
+                            } else if (exitCode == 1) {
+                                echo "✅ Scan completed successfully"
+                            } else if (exitCode == 2) {
+                                echo "⚠️  Scan completed successfully"
+                                currentBuild.result = 'UNSTABLE'
+                            } else {
+                                echo "❌ Analysis failed with exit code: ${exitCode}"
+                                error "Analysis failed with exit code: ${exitCode}. Check the output for details."
+                            }
                         }
-                        echo "✅ AnsiColor plugin used successfully"
-                    } catch (NoSuchMethodError e) {
-                        echo "ℹ️  AnsiColor plugin not available - using standard output"
-                        exitCode = sh(
-                            script: analysisCommand,
-                            returnStatus: true
-                        )
+                    } catch (hudson.AbortException e) {
+                        // This catches credential not found errors and other Jenkins-specific errors
+                        if (e.message.contains('plexalyzer-token')) {
+                            error """
+❌ CREDENTIAL ERROR: The Jenkins credential 'plexalyzer-token' was not found or is not accessible.
+
+Please ensure that:
+1. The credential 'plexalyzer-token' exists in Jenkins
+2. The credential is of type 'Secret text'
+3. The current user/job has permission to access this credential
+4. The credential contains a valid Plexalyzer token
+
+To create the credential:
+1. Go to Jenkins → Manage Jenkins → Credentials
+2. Select the appropriate domain (usually 'Global')
+3. Click 'Add Credentials'
+4. Choose 'Secret text' as the kind
+5. Enter your Plexalyzer token in the 'Secret' field
+6. Set the ID to 'plexalyzer-token'
+7. Save the credential
+
+Original error: ${e.message}
+                            """
+                        } else {
+                            error "❌ Jenkins error while accessing credentials: ${e.message}"
+                        }
                     } catch (Exception e) {
-                        echo "⚠️  AnsiColor plugin failed, falling back to standard output: ${e.message}"
-                        exitCode = sh(
-                            script: analysisCommand,
-                            returnStatus: true
-                        )
-                    }
-                    
-                    echo "Exit code: ${exitCode}"
-                    
-                    // Exit code indicates if vulnerabilities were found
-                    env.ANALYSIS_EXIT_CODE = exitCode.toString()
-                    
-                    if (exitCode == 500) {
-                        error "Fatal error in security analysis"
-                    } else if (exitCode == 0) {
-                        echo "✅ Scan completed successfully"
-                    } else if (exitCode == 1) {
-                        echo "✅ Scan completed successfully"
-                    } else if (exitCode == 2) {
-                        echo "⚠️  Scan completed successfully"
-                        currentBuild.result = 'UNSTABLE'
-                    } else {
-                        echo "❌ Analysis failed with exit code: ${exitCode}"
-                        error "Analysis failed with exit code: ${exitCode}. Check the output for details."
+                        error "❌ Unexpected error while processing Plexalyzer credentials: ${e.message}"
                     }
                 }
             }
